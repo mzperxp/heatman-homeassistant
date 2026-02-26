@@ -1,0 +1,51 @@
+enable_scene_rule:
+  name: Enable scene rule
+  description: Enable a scene rule on a location. Creates a static scene rule if one does not exist (using an existing Heatman scene). Only scenes already defined in Heatman can be used.
+  fields:
+    location_id:
+      name: Location ID
+      description: The Heatman location (room) ID to apply the scene to.
+      required: true
+      selector:
+        text:
+    scene_id:
+      name: Scene ID
+      description: The Heatman scene ID (must already exist in Heatman).
+      required: true
+      selector:
+        text:
+    heating_temperature:
+      name: Heating temperature
+      description: Optional heating setpoint in °C when creating a new rule. If omitted and a new rule is created, a default is used.
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.5
+          unit_of_measurement: "°C"
+    cooling_temperature:
+      name: Cooling temperature
+      description: Optional cooling setpoint in °C when creating a new rule.
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.5
+          unit_of_measurement: "°C"
+
+disable_scene_rule:
+  name: Disable scene rule
+  description: Disable the scene rule for the given location and scene (sets the rule inactive).
+  fields:
+    location_id:
+      name: Location ID
+      description: The Heatman location ID.
+      required: true
+      selector:
+        text:
+    scene_id:
+      name: Scene ID
+      description: The Heatman scene ID.
+      required: true
+      selector:
+        text:
