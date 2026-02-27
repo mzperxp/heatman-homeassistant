@@ -19,19 +19,19 @@ from .const import (
     API_PATH_MANUAL_OVERRIDES,
     API_PATH_SCENES,
     API_PATH_SCENE_RULES,
+    API_PATH_SYSTEM,
     CONF_BASE_URL,
     CONF_PASSWORD,
     CONF_USERNAME,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_OVERRIDE_DURATION_MINUTES,
-    DEFAULT_SCENE_RULE_HEATING_TEMP,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def _flatten_locations_with_state(node: dict[str, Any]) -> list[dict[str, Any]]:
-    """Flatten tree of locations with state into a list."""
+def _flatten_locations_with_state(node: dict[str, Any], is_root: bool = True) -> list[dict[str, Any]]:
+    """Flatten tree of locations with state into a list, marking the root location."""
     out: list[dict[str, Any]] = []
     loc_id = node.get("id")
     name = node.get("name") or loc_id or "Unknown"
@@ -42,10 +42,11 @@ def _flatten_locations_with_state(node: dict[str, Any]) -> list[dict[str, Any]]:
             "current_temp": node.get("currentTemp"),
             "current_setpoint": node.get("currentSetpoint"),
             "actuator_setpoint": node.get("actuatorSetpoint"),
+            "is_root": is_root,
         }
     )
     for child in node.get("childrenWithState") or []:
-        out.extend(_flatten_locations_with_state(child))
+        out.extend(_flatten_locations_with_state(child, is_root=False))
     return out
 
 
@@ -167,6 +168,41 @@ class HeatmanDataUpdateCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             _LOGGER.error("Heatman connection error to %s: %s", url, e)
             raise HomeAssistantError(f"Cannot connect to Heatman: {e!s}") from e
 
+    async def async_get_active_scene_preset(
+        self, location_id: str
+    ) -> dict[str, Any] | None:
+        """Get the active scene preset for a location, if any."""
+        token = await self._ensure_token()
+        url = f"{self._base_url()}/api/locations/{location_id}/active-scene"
+        _LOGGER.debug("Fetching active scene preset: %s", url)
+        try:
+            async with self._session.get(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=15,
+            ) as resp:
+                if resp.status == 204:
+                    return None
+                if resp.status == 401:
+                    self._access_token = None
+                    raise HomeAssistantError("Unauthorized")
+                if resp.status != 200:
+                    text = await resp.text()
+                    _LOGGER.error(
+                        "Heatman get active scene preset error: %s -> HTTP %s %s",
+                        url,
+                        resp.status,
+                        text[:200],
+                    )
+                    raise HomeAssistantError(
+                        f"Failed to get active scene preset: HTTP {resp.status}"
+                    )
+                data = await resp.json()
+                return data if isinstance(data, dict) else None
+        except aiohttp.ClientError as e:
+            _LOGGER.error("Heatman connection error to %s: %s", url, e)
+            raise HomeAssistantError(f"Cannot connect to Heatman: {e!s}") from e
+
     async def async_get_scene_rules_for_location(self, location_id: str) -> list[dict[str, Any]]:
         """Get all scene rules for a location."""
         token = await self._ensure_token()
@@ -190,63 +226,69 @@ class HeatmanDataUpdateCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             _LOGGER.error("Heatman connection error to %s: %s", url, e)
             raise HomeAssistantError(f"Cannot connect to Heatman: {e!s}") from e
 
-    async def async_enable_scene_rule(
+    async def async_set_active_scene_preset(
         self,
         location_id: str,
         scene_id: str,
-        heating_temperature: float | None = None,
-        cooling_temperature: float | None = None,
     ) -> None:
-        """Enable a scene rule for a location: create if missing (with default temps), else set active."""
+        """Set the active scene preset for a location (no temperatures, scene label only)."""
         token = await self._ensure_token()
-        rules = await self.async_get_scene_rules_for_location(location_id)
-        existing = next((r for r in rules if r.get("sceneId") == scene_id), None)
+        url = f"{self._base_url()}/api/locations/{location_id}/active-scene"
+        payload: dict[str, Any] = {"sceneId": scene_id}
+        _LOGGER.debug("Setting active scene preset: url=%s, payload=%s", url, payload)
+        try:
+            async with self._session.put(
+                url,
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=15,
+            ) as resp:
+                if resp.status not in (200, 204):
+                    text = await resp.text()
+                    _LOGGER.error(
+                        "Heatman set active scene preset failed: %s -> HTTP %s %s",
+                        url,
+                        resp.status,
+                        text[:200],
+                    )
+                    raise HomeAssistantError(
+                        f"Failed to set active scene preset: HTTP {resp.status}"
+                    )
+        except aiohttp.ClientError as e:
+            _LOGGER.error("Heatman connection error to %s: %s", url, e)
+            raise HomeAssistantError(
+                f"Cannot connect to Heatman at {self._base_url()}: {e!s}"
+            ) from e
 
-        if existing:
-            rule_id = existing.get("id")
-            url = f"{self._base_url()}{API_PATH_SCENE_RULES}/{rule_id}"
-            payload: dict[str, Any] = {"isActive": True}
-            _LOGGER.debug("Enabling existing scene rule: %s", rule_id)
-            try:
-                async with self._session.put(
-                    url,
-                    json=payload,
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=15,
-                ) as resp:
-                    if resp.status not in (200, 204):
-                        text = await resp.text()
-                        _LOGGER.error("Heatman enable scene rule failed: %s -> HTTP %s %s", url, resp.status, text[:200])
-                        raise HomeAssistantError(f"Failed to enable scene rule: HTTP {resp.status}")
-            except aiohttp.ClientError as e:
-                _LOGGER.error("Heatman connection error to %s: %s", url, e)
-                raise HomeAssistantError(f"Cannot connect to Heatman: {e!s}") from e
-        else:
-            # Create new scene rule; backend requires at least one temperature
-            heating = heating_temperature if heating_temperature is not None else DEFAULT_SCENE_RULE_HEATING_TEMP
-            cooling = cooling_temperature
-            payload = {
-                "locationId": location_id,
-                "sceneId": scene_id,
-                "heatingTemperature": heating,
-                "coolingTemperature": cooling,
-            }
-            url = f"{self._base_url()}{API_PATH_SCENE_RULES}"
-            _LOGGER.debug("Creating scene rule: location=%s scene=%s heating=%s", location_id, scene_id, heating)
-            try:
-                async with self._session.post(
-                    url,
-                    json=payload,
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=15,
-                ) as resp:
-                    if resp.status not in (200, 201):
-                        text = await resp.text()
-                        _LOGGER.error("Heatman create scene rule failed: %s -> HTTP %s %s", url, resp.status, text[:200])
-                        raise HomeAssistantError(f"Failed to create scene rule: HTTP {resp.status}")
-            except aiohttp.ClientError as e:
-                _LOGGER.error("Heatman connection error to %s: %s", url, e)
-                raise HomeAssistantError(f"Cannot connect to Heatman: {e!s}") from e
+        await self.async_request_refresh()
+
+    async def async_clear_active_scene_preset(self, location_id: str) -> None:
+        """Clear the active scene preset for a location."""
+        token = await self._ensure_token()
+        url = f"{self._base_url()}/api/locations/{location_id}/active-scene"
+        _LOGGER.debug("Clearing active scene preset: url=%s", url)
+        try:
+            async with self._session.delete(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=15,
+            ) as resp:
+                if resp.status not in (200, 204):
+                    text = await resp.text()
+                    _LOGGER.error(
+                        "Heatman clear active scene preset failed: %s -> HTTP %s %s",
+                        url,
+                        resp.status,
+                        text[:200],
+                    )
+                    raise HomeAssistantError(
+                        f"Failed to clear active scene preset: HTTP {resp.status}"
+                    )
+        except aiohttp.ClientError as e:
+            _LOGGER.error("Heatman connection error to %s: %s", url, e)
+            raise HomeAssistantError(
+                f"Cannot connect to Heatman at {self._base_url()}: {e!s}"
+            ) from e
 
         await self.async_request_refresh()
 
@@ -316,6 +358,68 @@ class HeatmanDataUpdateCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
             _LOGGER.error("Heatman API: expected JSON object, got %s", type(root).__name__)
             raise UpdateFailed("API returned unexpected data")
 
-        locations = _flatten_locations_with_state(root)
+        locations = _flatten_locations_with_state(root, is_root=True)
         _LOGGER.debug("Fetched %d locations with state", len(locations))
         return locations
+
+    async def async_get_operating_mode(self) -> str:
+        """Fetch current system operating mode ('HEATING' or 'COOLING')."""
+        token = await self._ensure_token()
+        url = f"{self._base_url()}{API_PATH_SYSTEM}/operating-mode"
+        _LOGGER.debug("Fetching operating mode: %s", url)
+        try:
+            async with self._session.get(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10,
+            ) as resp:
+                if resp.status == 401:
+                    self._access_token = None
+                    raise HomeAssistantError("Unauthorized")
+                if resp.status != 200:
+                    text = await resp.text()
+                    _LOGGER.error(
+                        "Heatman operating mode API error: %s -> HTTP %s %s",
+                        url,
+                        resp.status,
+                        text[:200],
+                    )
+                    raise HomeAssistantError(
+                        f"Failed to fetch operating mode: HTTP {resp.status}"
+                    )
+                data = await resp.json()
+                mode = data.get("operatingMode")
+                if mode not in ("HEATING", "COOLING"):
+                    raise HomeAssistantError("Operating mode response missing/invalid")
+                return mode
+        except aiohttp.ClientError as e:
+            _LOGGER.error("Heatman connection error to %s: %s", url, e)
+            raise HomeAssistantError(f"Cannot connect to Heatman: {e!s}") from e
+
+    async def async_set_operating_mode(self, mode: str) -> None:
+        """Set system operating mode ('HEATING' or 'COOLING')."""
+        token = await self._ensure_token()
+        url = f"{self._base_url()}{API_PATH_SYSTEM}/operating-mode"
+        payload: dict[str, Any] = {"operatingMode": mode}
+        _LOGGER.debug("Setting operating mode: url=%s, payload=%s", url, payload)
+        try:
+            async with self._session.post(
+                url,
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10,
+            ) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    _LOGGER.error(
+                        "Heatman set operating mode failed: %s -> HTTP %s %s",
+                        url,
+                        resp.status,
+                        text[:200],
+                    )
+                    raise HomeAssistantError(
+                        f"Failed to set operating mode: HTTP {resp.status}"
+                    )
+        except aiohttp.ClientError as e:
+            _LOGGER.error("Heatman connection error to %s: %s", url, e)
+            raise HomeAssistantError(f"Cannot connect to Heatman: {e!s}") from e
