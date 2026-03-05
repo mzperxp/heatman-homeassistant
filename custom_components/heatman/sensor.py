@@ -1,6 +1,8 @@
-"""Sensor platform for Heatman locations (temperature and setpoint)."""
+"""Sensor platform for Heatman locations (temperature and setpoint) and system metrics."""
 
 from __future__ import annotations
+
+import logging
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -15,6 +17,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import HeatmanDataUpdateCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _device_info(entry_id: str, location_id: str, location_name: str) -> dict:
@@ -107,6 +111,40 @@ class HeatmanSetpointSensor(CoordinatorEntity[HeatmanDataUpdateCoordinator], Sen
         super()._handle_coordinator_update()
 
 
+class HeatmanCpuTemperatureSensor(SensorEntity):
+    """CPU temperature sensor for the Heatman backend host."""
+
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: HeatmanDataUpdateCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        self._coordinator = coordinator
+        self._entry = entry
+        self._attr_name = "Heatman CPU temperature"
+        self._attr_unique_id = f"{entry.entry_id}_cpu_temperature"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, f"{entry.entry_id}_system")},
+            "name": "Heatman system",
+            "manufacturer": "Heatman",
+            "model": "Controller",
+        }
+
+    async def async_update(self) -> None:
+        """Fetch latest CPU temperature from backend."""
+        try:
+            temp = await self._coordinator.async_get_cpu_temperature()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Failed to fetch Heatman CPU temperature: %s", err)
+            temp = None
+
+        self._attr_native_value = float(temp) if temp is not None else None
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -127,5 +165,8 @@ async def async_setup_entry(
         entities.append(
             HeatmanSetpointSensor(coordinator, entry, loc_id, name)
         )
+
+    # Single system-wide CPU temperature sensor
+    entities.append(HeatmanCpuTemperatureSensor(coordinator, entry))
 
     async_add_entities(entities)

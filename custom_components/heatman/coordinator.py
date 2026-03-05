@@ -423,3 +423,46 @@ class HeatmanDataUpdateCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         except aiohttp.ClientError as e:
             _LOGGER.error("Heatman connection error to %s: %s", url, e)
             raise HomeAssistantError(f"Cannot connect to Heatman: {e!s}") from e
+
+    async def async_get_cpu_temperature(self) -> float | None:
+        """Fetch current CPU temperature of the Heatman backend host, if available."""
+        token = await self._ensure_token()
+        url = f"{self._base_url()}{API_PATH_SYSTEM}/cpu-temperature"
+        _LOGGER.debug("Fetching CPU temperature: %s", url)
+        try:
+            async with self._session.get(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10,
+            ) as resp:
+                if resp.status == 204:
+                    return None
+                if resp.status == 401:
+                    self._access_token = None
+                    raise HomeAssistantError("Unauthorized")
+                if resp.status != 200:
+                    text = await resp.text()
+                    _LOGGER.error(
+                        "Heatman CPU temperature API error: %s -> HTTP %s %s",
+                        url,
+                        resp.status,
+                        text[:200],
+                    )
+                    raise HomeAssistantError(
+                        f"Failed to fetch CPU temperature: HTTP {resp.status}"
+                    )
+                data = await resp.json()
+                value = data.get("cpuTemperature")
+                if value is None:
+                    return None
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    _LOGGER.error(
+                        "Heatman CPU temperature response had non-numeric value: %s",
+                        value,
+                    )
+                    return None
+        except aiohttp.ClientError as e:
+            _LOGGER.error("Heatman connection error to %s: %s", url, e)
+            raise HomeAssistantError(f"Cannot connect to Heatman: {e!s}") from e
