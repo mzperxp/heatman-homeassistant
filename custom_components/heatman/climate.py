@@ -7,6 +7,7 @@ from typing import Any
 from homeassistant.components.climate import ClimateEntity
 from homeassistant.components.climate.const import (
     ClimateEntityFeature,
+    HVACAction,
     HVACMode,
 )
 from homeassistant.config_entries import ConfigEntry
@@ -82,9 +83,31 @@ class HeatmanClimate(CoordinatorEntity[HeatmanDataUpdateCoordinator], ClimateEnt
                 self._attr_target_temperature = (
                     float(current_setpoint) if current_setpoint is not None else None
                 )
-                # For non-root entities, keep hvac_mode in sync with system mode (coordinator attribute).
-                # Root entity will be updated explicitly when mode changes.
+                self._attr_hvac_action = self._derive_hvac_action(loc)
                 return
+        self._attr_hvac_action = None
+
+    def _derive_hvac_action(self, loc: dict[str, Any]) -> HVACAction | None:
+        """Derive hvac_action from location actuator count and actuator_setpoint."""
+        actuator_count = loc.get("actuator_count")
+        if actuator_count is None or (
+            isinstance(actuator_count, (int, float)) and actuator_count <= 0
+        ):
+            return None
+        actuator_setpoint = loc.get("actuator_setpoint")
+        if actuator_setpoint is None:
+            return HVACAction.IDLE
+        try:
+            value = int(float(actuator_setpoint))
+        except (TypeError, ValueError):
+            return HVACAction.IDLE
+        if value <= 50:
+            return HVACAction.IDLE
+        if self._attr_hvac_mode == HVACMode.HEAT:
+            return HVACAction.HEATING
+        if self._attr_hvac_mode == HVACMode.COOL:
+            return HVACAction.COOLING
+        return HVACAction.IDLE
 
     async def _update_preset_from_backend(self) -> None:
         """Set preset_mode from backend active scene preset for this location (once per entity)."""

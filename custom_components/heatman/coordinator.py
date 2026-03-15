@@ -44,6 +44,7 @@ def _flatten_locations_with_state(node: dict[str, Any], is_root: bool = True) ->
             "current_temp": node.get("currentTemp"),
             "current_setpoint": node.get("currentSetpoint"),
             "actuator_setpoint": node.get("actuatorSetpoint"),
+            "actuator_count": node.get("actuatorCount"),
             "is_root": is_root,
         }
     )
