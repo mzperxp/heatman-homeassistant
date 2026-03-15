@@ -14,6 +14,10 @@ API_PATH_MANUAL_OVERRIDES = "/api/manual-overrides"
 API_PATH_SCENES = "/api/scenes"
 API_PATH_SCENE_RULES = "/api/scene-rules"
 API_PATH_SYSTEM = "/api/system"
+API_PATH_SENSORS_BATTERY = "/api/sensors/battery"
+
+# Battery sync: once per day (for alerts)
+BATTERY_SCAN_INTERVAL_SECONDS = 24 * 60 * 60  # 86400
 
 # Default duration for manual overrides created from Home Assistant (in minutes)
 DEFAULT_OVERRIDE_DURATION_MINUTES = 240

@@ -172,7 +172,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Heatman climate entities from a config entry."""
-    coordinator: HeatmanDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: HeatmanDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     entities: list[ClimateEntity] = []
 
     try:

@@ -15,11 +15,13 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .const import (
     API_PATH_LOGIN,
+    API_PATH_SENSORS_BATTERY,
     API_PATH_TREE_WITH_STATE,
     API_PATH_MANUAL_OVERRIDES,
     API_PATH_SCENES,
     API_PATH_SCENE_RULES,
     API_PATH_SYSTEM,
+    BATTERY_SCAN_INTERVAL_SECONDS,
     CONF_BASE_URL,
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -466,3 +468,53 @@ class HeatmanDataUpdateCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
         except aiohttp.ClientError as e:
             _LOGGER.error("Heatman connection error to %s: %s", url, e)
             raise HomeAssistantError(f"Cannot connect to Heatman: {e!s}") from e
+
+    async def async_fetch_sensors_battery(self) -> list[dict[str, Any]]:
+        """Fetch all sensors with latest battery level (for integrations)."""
+        token = await self._ensure_token()
+        url = f"{self._base_url()}{API_PATH_SENSORS_BATTERY}"
+        try:
+            async with self._session.get(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=15,
+            ) as resp:
+                if resp.status == 401:
+                    self._access_token = None
+                    raise UpdateFailed("Unauthorized")
+                if resp.status != 200:
+                    text = await resp.text()
+                    _LOGGER.warning(
+                        "Heatman sensors battery API: %s -> HTTP %s %s",
+                        url,
+                        resp.status,
+                        text[:200],
+                    )
+                    return []
+                data = await resp.json()
+                return data if isinstance(data, list) else []
+        except aiohttp.ClientError as e:
+            _LOGGER.warning("Heatman sensors battery fetch failed: %s", e)
+            return []
+
+
+class HeatmanBatteryCoordinator(DataUpdateCoordinator[list[dict[str, Any]]]):
+    """Coordinator that fetches sensor battery levels once per day."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        main_coordinator: HeatmanDataUpdateCoordinator,
+    ) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            name="heatman_battery",
+            update_interval=timedelta(seconds=BATTERY_SCAN_INTERVAL_SECONDS),
+        )
+        self._entry = entry
+        self._main_coordinator = main_coordinator
+
+    async def _async_update_data(self) -> list[dict[str, Any]]:
+        return await self._main_coordinator.async_fetch_sensors_battery()

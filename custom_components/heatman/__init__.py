@@ -7,7 +7,7 @@ from homeassistant.helpers import config_validation as cv
 import voluptuous as vol
 
 from .const import DOMAIN
-from .coordinator import HeatmanDataUpdateCoordinator
+from .coordinator import HeatmanBatteryCoordinator, HeatmanDataUpdateCoordinator
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.CLIMATE]
 
@@ -31,11 +31,14 @@ SCENE_RULE_DISABLE_SCHEMA = vol.Schema(
 
 
 def _get_coordinator(hass: HomeAssistant):
-    """Return the first Heatman coordinator (single-server setup)."""
+    """Return the first Heatman main coordinator (single-server setup)."""
     data = hass.data.get(DOMAIN)
     if not data:
         return None
-    return next(iter(data.values()), None)
+    value = next(iter(data.values()), None)
+    if isinstance(value, dict):
+        return value.get("coordinator")
+    return value
 
 
 async def _handle_enable_scene_rule(call):
@@ -69,7 +72,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = HeatmanDataUpdateCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    battery_coordinator = HeatmanBatteryCoordinator(hass, entry, coordinator)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        "coordinator": coordinator,
+        "battery_coordinator": battery_coordinator,
+    }
 
     if len(hass.data[DOMAIN]) == 1:
         hass.services.async_register(
